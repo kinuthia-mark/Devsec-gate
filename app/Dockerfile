@@ -4,7 +4,8 @@
 FROM node:22-alpine AS deps
 WORKDIR /app
 COPY package*.json ./
-RUN npm install --omit=dev --no-audit --no-fund
+# mkdir keeps the COPY below working when there are no dependencies yet.
+RUN npm install --omit=dev --no-audit --no-fund && mkdir -p node_modules
 
 # Stage 2: runtime image. npm, npx, corepack and yarn are removed because the
 # server only needs the node binary, and they ship their own dependencies
