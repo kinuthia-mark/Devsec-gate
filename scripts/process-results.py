@@ -7,6 +7,8 @@ and renders a triage report. Blocks the pipeline if allow == false.
 
 Usage:
     python3 scripts/process-results.py [path/to/input.json]
+
+Exit code 0 means the gate passed, 1 means it blocked (or OPA could not run).
 """
 from __future__ import annotations
 
@@ -18,6 +20,7 @@ import sys
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 POLICY_DIR = os.path.join(REPO_ROOT, "policies")
+DEFAULT_INPUT = os.path.join(REPO_ROOT, "fixtures", "scan-blocked.json")
 RESULTS_DIR = os.path.join(REPO_ROOT, "scan-results")
 
 
@@ -63,46 +66,38 @@ def run_opa_query(input_path: str, query: str) -> dict | list | bool | None:
         return None
 
 
+EMPTY_NOISE = {
+    "total_findings": 0,
+    "actionable_findings": 0,
+    "false_positives_filtered": 0,
+    "excluded_packages_filtered": 0,
+    "total_filtered": 0,
+    "noise_reduction_percentage": 0,
+}
+
+EMPTY_SLA = {
+    "overall_status": "UNKNOWN",
+    "compliance_percentage": 0,
+    "violations_detail": [],
+}
+
+
 def fetch_all_outputs(input_path: str) -> dict:
-    """Query all OPA outputs and combine into a single decision object."""
-    decision = {}
-    
-    # Query allow
-    allow = run_opa_query(input_path, "data.devsecops.allow")
-    decision["allow"] = allow if allow is not None else False
-    
-    # Query violated policies
-    violations = run_opa_query(input_path, "data.devsecops.violated_policies")
-    decision["violated_policies"] = violations if violations else []
-    
-    # Query noise statistics
-    noise = run_opa_query(input_path, "data.devsecops.noise_statistics")
-    # noise_statistics is a set with one element
-    if noise and isinstance(noise, list) and len(noise) > 0:
-        decision["noise_statistics"] = noise[0]
-    else:
-        decision["noise_statistics"] = {
-            "total_findings": 0,
-            "actionable_findings": 0,
-            "false_positives_filtered": 0,
-            "excluded_packages_filtered": 0,
-            "total_filtered": 0,
-            "noise_reduction_percentage": 0
-        }
-    
-    # Query SLA compliance
-    sla = run_opa_query(input_path, "data.sla_gate.sla_compliance_report")
-    # sla_compliance_report is a set with one element
-    if sla and isinstance(sla, list) and len(sla) > 0:
-        decision["sla_compliance_report"] = sla[0]
-    else:
-        decision["sla_compliance_report"] = {
-            "overall_status": "UNKNOWN",
-            "compliance_percentage": 0,
-            "violations_detail": []
-        }
-    
-    return decision
+    """Evaluate the whole devsecops package once and pick out the parts
+    the report needs. policy.rego and sla_gate.rego share that package."""
+    bundle = run_opa_query(input_path, "data.devsecops")
+    if not isinstance(bundle, dict):
+        # Fail closed: if the policies cannot be evaluated, nothing passes.
+        print("[ERROR] Could not evaluate the devsecops policies. Blocking.")
+        bundle = {}
+
+    return {
+        "allow": bundle.get("allow", False) is True,
+        "violated_policies": sorted(bundle.get("violated_policies") or []),
+        "noise_statistics": bundle.get("noise_statistics") or EMPTY_NOISE,
+        "sla_compliance_report": bundle.get("sla_compliance_report") or EMPTY_SLA,
+        "violation_report": bundle.get("violation_report") or {},
+    }
 
 
 def render_report(decision: dict) -> bool:
@@ -127,7 +122,7 @@ def render_report(decision: dict) -> bool:
         print(f"SLA compliance    : {sla.get('compliance_percentage', 0)}%")
         for v in sla.get("violations_detail", []):
             print(f"  [SLA BREACH] {v['vulnerability_id']} ({v['severity']}) "
-                  f"in '{v['package']}' — {v['overdue_by_days']}d over "
+                  f"in '{v['package']}' - {v['overdue_by_days']}d over "
                   f"the {v['sla_days']}d window")
     
     if violated_policies:
@@ -177,8 +172,7 @@ def create_ticket(summary_path: str) -> bool:
 
 
 def main() -> None:
-    input_path = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
-        POLICY_DIR, "test_data.json")
+    input_path = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_INPUT
     
     if not os.path.exists(input_path):
         print(f"[ERROR] Input file not found: {input_path}")

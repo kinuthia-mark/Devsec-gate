@@ -25,7 +25,7 @@ bash scripts/opa-debug.sh > /tmp/opa-debug.log 2>&1 && echo -e "${GREEN}  OK${NC
 
 echo -e "${BLUE}[2/3] Running policy triage against test fixture...${NC}"
 set +e
-python3 scripts/process-results.py policies/test_data.json
+python3 scripts/process-results.py fixtures/scan-blocked.json
 GATE_RESULT=$?
 set -e
 

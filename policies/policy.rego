@@ -1,128 +1,137 @@
+# policies/policy.rego
+#
+# Exploitability triage. Decides whether a batch of scanner findings is
+# allowed through the gate, and reports how much noise was filtered out.
+# sla_gate.rego lives in the same "devsecops" package, so one OPA query
+# against data.devsecops returns the whole decision.
 package devsecops
+
+import rego.v1
 
 default allow := false
 
 allow if {
-    count(violated_policies) == 0
+	count(violated_policies) == 0
+}
+
+# ---------------------------------------------------------------------------
+# Blocking rules
+# ---------------------------------------------------------------------------
+
+violated_policies contains msg if {
+	count(blocking_critical) > 0
+	msg := "CRITICAL vulnerability detected - must be remediated"
 }
 
 violated_policies contains msg if {
-    not critical_vulnerability_allowed
-    msg := "CRITICAL vulnerability detected - must be remediated"
+	count(blocking_high) > 0
+	msg := "HIGH exploitable vulnerability detected"
 }
 
-violated_policies contains msg if {
-    not high_exploitable_vulnerability_allowed
-    msg := "HIGH exploitable vulnerability detected"
+# A finding only counts towards a block decision if it is not a known false
+# positive and its package is not on the exclusion list.
+counts_for_blocking(vuln) if {
+	not is_false_positive(vuln)
+	not is_excluded_package(vuln)
 }
 
-critical_vulnerability_allowed if {
-    critical_vulns := [v | v := input.vulnerabilities[_]; v.severity == "CRITICAL"]
-    count(critical_vulns) == 0
-}
+# Every CRITICAL blocks, whether or not an exploit is known.
+blocking_critical := [v |
+	some v in input.vulnerabilities
+	v.severity == "CRITICAL"
+	counts_for_blocking(v)
+]
 
-critical_vulnerability_allowed if {
-    critical_vulns := [v | v := input.vulnerabilities[_]; v.severity == "CRITICAL"]
-    all_false_positives := [v | v := critical_vulns[_]; is_false_positive(v)]
-    count(all_false_positives) == count(critical_vulns)
-}
+# A HIGH blocks only when there is a realistic way to exploit it.
+blocking_high := [v |
+	some v in input.vulnerabilities
+	v.severity == "HIGH"
+	counts_for_blocking(v)
+	is_exploitable(v)
+]
 
-high_exploitable_vulnerability_allowed if {
-    high_vulns := [v | v := input.vulnerabilities[_]; v.severity == "HIGH"]
-    count(high_vulns) == 0
-}
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
-high_exploitable_vulnerability_allowed if {
-    high_vulns := [v | v := input.vulnerabilities[_]; v.severity == "HIGH"]
-    exploitable_high := [v | v := high_vulns[_]; is_exploitable(v)]
-    count(exploitable_high) == 0
-}
+is_exploitable(vuln) if vuln.cvss_score >= 7.0
 
-is_exploitable(vuln) if {
-    vuln.cvss_score >= 7.0
-}
+is_exploitable(vuln) if vuln.exploit_available == true
 
-is_exploitable(vuln) if {
-    vuln.exploit_available == true
-}
+is_exploitable(vuln) if vuln.public_exploit == true
 
-is_exploitable(vuln) if {
-    vuln.public_exploit == true
-}
+is_exploitable(vuln) if vuln.active_exploitation == true
 
-is_exploitable(vuln) if {
-    vuln.active_exploitation == true
-}
-
-is_false_positive(vuln) if {
-    false_positive_patterns := [
-        "no fix available",
-        "dev dependency only",
-        "test dependency only",
-        "build-time only",
-        "not in executable path"
-    ]
-    lower_description := lower(vuln.description)
-    some pattern in false_positive_patterns
-    contains(lower_description, pattern)
-}
+# Phrases scanners use for findings that cannot be reached in production.
+false_positive_patterns := [
+	"dev dependency only",
+	"test dependency only",
+	"build-time only",
+	"not in executable path",
+]
 
 is_false_positive(vuln) if {
-    vuln.false_positive == true
+	some pattern in false_positive_patterns
+	contains(lower(vuln.description), pattern)
 }
 
+is_false_positive(vuln) if vuln.false_positive == true
+
+# Low-scoring LOW findings with no exploit are treated as noise.
 is_false_positive(vuln) if {
-    vuln.severity == "LOW"
-    vuln.cvss_score < 4.0
-    not vuln.exploit_available
+	vuln.severity == "LOW"
+	vuln.cvss_score < 4.0
+	not vuln.exploit_available
+}
+
+# Packages the team has reviewed and accepted, written as "name:version".
+excluded_packages := {
+	"test-package:1.0.0",
+	"deprecated-lib:0.0.1",
 }
 
 is_excluded_package(vuln) if {
-    excluded := {
-        "node:12",
-        "test-package@1.0.0",
-        "deprecated-lib"
-    }
-    pkg_name := sprintf("%s:%s", [vuln.package_name, vuln.package_version])
-    excluded[pkg_name]
+	excluded_packages[sprintf("%s:%s", [vuln.package_name, vuln.package_version])]
 }
 
-noise_statistics contains stat if {
-    total_findings := count(input.vulnerabilities)
-    high_risk := [v | v := input.vulnerabilities[_]; v.severity in ["CRITICAL", "HIGH"]; is_exploitable(v)]
-    false_positives := [v | v := input.vulnerabilities[_]; is_false_positive(v)]
-    excluded := [v | v := input.vulnerabilities[_]; is_excluded_package(v)]
-    filtered_out := count(false_positives) + count(excluded)
-    reduction_percentage := (filtered_out / total_findings) * 100
-    stat := {
-        "total_findings": total_findings,
-        "high_risk_exploitable": count(high_risk),
-        "false_positives_filtered": count(false_positives),
-        "excluded_packages_filtered": count(excluded),
-        "total_filtered": filtered_out,
-        "noise_reduction_percentage": reduction_percentage,
-        "actionable_findings": count(high_risk)
-    }
+# ---------------------------------------------------------------------------
+# Reporting
+# ---------------------------------------------------------------------------
+
+actionable := array.concat(blocking_critical, blocking_high)
+
+false_positives := [v | some v in input.vulnerabilities; is_false_positive(v)]
+
+# Excluded packages that were not already counted as false positives, so
+# nothing is counted twice in total_filtered.
+excluded_only := [v |
+	some v in input.vulnerabilities
+	is_excluded_package(v)
+	not is_false_positive(v)
+]
+
+noise_statistics := {
+	"total_findings": total,
+	"actionable_findings": count(actionable),
+	"false_positives_filtered": count(false_positives),
+	"excluded_packages_filtered": count(excluded_only),
+	"total_filtered": filtered,
+	"noise_reduction_percentage": percentage(filtered, total),
+} if {
+	total := count(input.vulnerabilities)
+	filtered := count(false_positives) + count(excluded_only)
 }
 
-violation_report contains report if {
-    actionable := [v | 
-        v := input.vulnerabilities[_]
-        v.severity in ["CRITICAL", "HIGH"]
-        is_exploitable(v)
-        not is_excluded_package(v)
-    ]
-    false_positives_filtered := [v | 
-        v := input.vulnerabilities[_]
-        is_false_positive(v)
-    ]
-    report := {
-        "total_vulnerabilities": count(input.vulnerabilities),
-        "actionable_vulnerabilities": count(actionable),
-        "false_positives_filtered": count(false_positives_filtered),
-        "details": {
-            "actionable": actionable,
-            "filtered_false_positives": false_positives_filtered
-        }
-    }
+percentage(_, 0) := 0
+
+percentage(part, whole) := round((part / whole) * 100) if whole > 0
+
+violation_report := {
+	"total_vulnerabilities": count(input.vulnerabilities),
+	"actionable_vulnerabilities": count(actionable),
+	"false_positives_filtered": count(false_positives),
+	"details": {
+		"actionable": actionable,
+		"filtered_false_positives": false_positives,
+	},
 }

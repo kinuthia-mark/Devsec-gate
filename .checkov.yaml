@@ -1,24 +1,30 @@
+# Checkov configuration for terraform/.
+# Run with:  checkov --config-file .checkov.yaml
+directory:
+  - terraform
 framework:
   - terraform
 check:
-  - CKV_AWS_1
-  - CKV_AWS_3
-  - CKV_AWS_16
-  - CKV_AWS_18
-  - CKV_AWS_19
-  - CKV_AWS_21
-  - CKV_AWS_25
-  - CKV_AWS_7
-  - CKV_AWS_23
-  - CKV_AWS_40
-skip-check:
-  - CKV_AWS_33
-severity: MEDIUM
-output: sarif
-log-level: INFO
-exclude-paths:
-  - '**/node_modules/**'
-  - '**/venv/**'
-  - '**/.terraform/**'
-quiet: false
-compact: false
+  - CKV_AWS_1    # IAM policies must not grant full admin
+  - CKV_AWS_3    # EBS volumes encrypted
+  - CKV_AWS_7    # KMS key rotation enabled
+  - CKV_AWS_8    # EC2 block devices encrypted
+  - CKV_AWS_16   # RDS encrypted at rest
+  - CKV_AWS_18   # S3 access logging enabled
+  - CKV_AWS_19   # S3 encrypted at rest
+  - CKV_AWS_20   # S3 bucket not public-read
+  - CKV_AWS_21   # S3 versioning enabled
+  - CKV_AWS_23   # Security group rules have descriptions
+  - CKV_AWS_24   # No SSH from 0.0.0.0/0
+  - CKV_AWS_25   # No RDP from 0.0.0.0/0
+  - CKV_AWS_40   # IAM policies attached to groups or roles, not users
+  - CKV_AWS_53   # S3 block public ACLs
+  - CKV_AWS_54   # S3 block public policy
+  - CKV_AWS_55   # S3 ignore public ACLs
+  - CKV_AWS_56   # S3 restrict public buckets
+  - CKV_AWS_79   # EC2 requires IMDSv2
+  - CKV_AWS_126  # EC2 detailed monitoring
+  - CKV_AWS_135  # EC2 is EBS optimised
+output: cli
+compact: true
+quiet: true

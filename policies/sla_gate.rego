@@ -2,9 +2,9 @@
 #
 # Severity-weighted SLA enforcement. Computes days-since-discovery for
 # every finding and flags anything that has aged past its remediation
-# window. Shares the "devsecops.triage" package with policy.rego so both
+# window. Shares the "devsecops" package with policy.rego so both
 # evaluate together under a single OPA query.
-package devsecops.triage
+package devsecops
 
 import rego.v1
 
@@ -24,6 +24,11 @@ within_sla if {
 
 sla_violations contains violation if {
 	some vuln in input.vulnerabilities
+
+	# Confirmed false positives are kept for the audit trail but have no
+	# remediation deadline.
+	not is_false_positive(vuln)
+
 	discovered := parse_iso_date(vuln.discovered_date)
 	scanned := parse_iso_date(input.scan_date)
 	days_open := days_between(discovered, scanned)
@@ -41,10 +46,10 @@ sla_violations contains violation if {
 	}
 }
 
-sla_for_severity(severity) := critical_sla_days if { severity == "CRITICAL" }
-sla_for_severity(severity) := high_sla_days if { severity == "HIGH" }
-sla_for_severity(severity) := medium_sla_days if { severity == "MEDIUM" }
-sla_for_severity(severity) := low_sla_days if { severity == "LOW" }
+sla_for_severity(severity) := critical_sla_days if severity == "CRITICAL"
+sla_for_severity(severity) := high_sla_days if severity == "HIGH"
+sla_for_severity(severity) := medium_sla_days if severity == "MEDIUM"
+sla_for_severity(severity) := low_sla_days if severity == "LOW"
 sla_for_severity(severity) := default_sla_days if {
 	not severity in ["CRITICAL", "HIGH", "MEDIUM", "LOW"]
 }
@@ -56,8 +61,8 @@ days_between(start_ns, end_ns) := days if {
 	days := floor((end_ns - start_ns) / ns_per_day)
 }
 
-overall_sla_status(within) := "COMPLIANT" if { within == true }
-overall_sla_status(within) := "VIOLATED" if { within == false }
+overall_sla_status(within) := "COMPLIANT" if within == true
+overall_sla_status(within) := "VIOLATED" if within == false
 
 # Guards against divide-by-zero on an empty scan.
 sla_compliance_report := report if {
