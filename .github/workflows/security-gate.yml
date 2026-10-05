@@ -62,22 +62,69 @@ jobs:
           pip install checkov
           checkov --config-file .checkov.yaml
 
-  container-scan:
-    name: Build and scan the container
+  python-tests:
+    name: Python script tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Set up OPA
+        uses: open-policy-agent/setup-opa@v2
+        with:
+          version: latest
+      - run: pip install pytest
+      - run: python -m pytest tests/ -v
+
+  container-scan:
+    name: Scan the container and gate on real findings
+    runs-on: ubuntu-latest
+    needs: policy-tests
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up OPA
+        uses: open-policy-agent/setup-opa@v2
+        with:
+          version: latest
 
       - name: Build image
         run: docker build -t devsecops-gateway:${{ github.sha }} ./app
 
-      - name: Trivy scan (fails on fixable HIGH or CRITICAL)
+      - name: Trivy scan to JSON (all severities)
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: devsecops-gateway:${{ github.sha }}
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-          exit-code: "1"
+          format: json
+          output: trivy.json
+          exit-code: "0"
+
+      # CISA's catalogue of CVEs that are being exploited in the wild. A
+      # finding on this list counts as actively exploited in the policy.
+      - name: Download the CISA KEV catalogue
+        run: |
+          curl -fsSL --retry 3 -o kev.json             https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json             || echo '{"vulnerabilities": []}' > kev.json
+
+      - name: Normalise Trivy output for the gate
+        run: python3 scripts/normalize-trivy.py trivy.json --kev kev.json -o scan-results/gate-input.json
+
+      - name: Exploitability gate on the real scan
+        run: python3 scripts/process-results.py scan-results/gate-input.json
+
+      - name: Upload scan and gate results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: container-scan
+          path: |
+            trivy.json
+            scan-results/
+          retention-days: 30
 
   security-gate:
     name: Exploitability gate

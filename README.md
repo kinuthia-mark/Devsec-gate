@@ -4,6 +4,7 @@
 ![OPA](https://img.shields.io/badge/policy-OPA%20%2F%20Rego-7D9199?logo=openpolicyagent&logoColor=white)
 ![Terraform](https://img.shields.io/badge/IaC-Terraform-844FBA?logo=terraform&logoColor=white)
 ![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
+![Tests](https://img.shields.io/badge/tests-14%20Rego%20%2B%2012%20pytest-success)
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue)
 
 A centralized security gating framework that filters vulnerability noise by **exploitability** rather than raw alert volume, enforces severity-weighted SLA windows, and blocks unverified builds before they reach production Kubernetes — without burying developers in false positives.
@@ -125,8 +126,13 @@ flowchart TB
 │   └── policy_test.rego                  # OPA unit tests for both policy files
 ├── fixtures/
 │   ├── scan-blocked.json                 # Sample scan the gate must block
-│   └── scan-clean.json                   # Sample scan the gate must pass
+│   ├── scan-clean.json                   # Sample scan the gate must pass
+│   ├── trivy-sample.json                 # Sample raw Trivy report for the converter tests
+│   └── kev-sample.json                   # Sample CISA KEV catalogue
+├── tests/
+│   └── test_scripts.py                   # pytest: converter, gate end to end, Jira fallback
 ├── scripts/
+│   ├── normalize-trivy.py                # Converts real Trivy JSON (+ CISA KEV) into gate input
 │   ├── process-results.py                # Runs OPA, renders the triage report, sets exit code
 │   ├── create-ticket.py                  # Files a Jira ticket on gate failure (env-var driven)
 │   ├── local-test.sh                     # One-shot local pipeline dry run
@@ -195,14 +201,17 @@ flowchart TD
 
 ## Running in GitHub Actions
 
-The workflow (`.github/workflows/security-gate.yml`) runs on every push and pull request to `main` or `develop`. It has four jobs:
+The workflow (`.github/workflows/security-gate.yml`) runs on every push and pull request to `main` or `develop`. It has five jobs:
 
 | Job | What it does | Fails when |
 |---|---|---|
 | **OPA policy unit tests** | `opa check`, `opa fmt --fail` and `opa test policies/` | A policy has a syntax error, is not formatted, or a test fails |
+| **Python script tests** | `pytest tests/`: the Trivy converter, the gate end to end on every fixture, and the Jira fallback | Any script behaves differently from its tests |
 | **Terraform lint and Checkov** | `terraform fmt` and `validate`, TFLint with the AWS ruleset, Checkov with `.checkov.yaml` | The reference infrastructure breaks a lint rule or a selected Checkov check |
-| **Build and scan the container** | Builds `app/` and scans it with Trivy | Trivy finds a HIGH or CRITICAL vulnerability that has a fix available |
+| **Scan the container and gate on real findings** | Builds `app/`, scans it with Trivy, downloads the live CISA KEV catalogue, converts the report with `normalize-trivy.py` and runs the gate on it | The real image has a finding the policy says must block |
 | **Exploitability gate** | Runs `process-results.py` on both fixtures | The clean scan is blocked, or the scan with an exploitable CRITICAL is let through |
+
+The container job is the full shift-left pipeline on a real artifact: **scanner → normaliser → OPA → pass or block**. Its Trivy report and the gate's decision are uploaded as the `container-scan` artifact.
 
 ```mermaid
 sequenceDiagram
@@ -242,6 +251,41 @@ The triage report and violation log are uploaded as the `security-gate-report` a
 
 Without these secrets the gate still runs and blocks correctly. Violations are written to `scan-results/security-gate-violations.log.json` instead.
 
+## Gating real scanner output
+
+`scripts/normalize-trivy.py` turns a Trivy JSON report into the schema the policies read, so the same gate works on a real image:
+
+```bash
+trivy image --format json -o trivy.json my-app:latest
+curl -fsSL -o kev.json https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json
+python3 scripts/normalize-trivy.py trivy.json --kev kev.json -o scan-results/gate-input.json
+python3 scripts/process-results.py scan-results/gate-input.json
+```
+
+```mermaid
+flowchart LR
+    T[Trivy JSON] --> N[normalize-trivy.py]
+    K[CISA KEV catalogue] --> N
+    N --> G[gate-input.json]
+    G --> O[OPA: data.devsecops]
+    O --> D{allow?}
+    D -->|yes| P[exit 0]
+    D -->|no| B[exit 1 + Jira ticket]
+```
+
+How the converter fills each field:
+
+| Gate field | Source in the Trivy report |
+|---|---|
+| `id`, `package_name`, `package_version` | `VulnerabilityID`, `PkgName`, `InstalledVersion` |
+| `severity` | `Severity` (`UNKNOWN` becomes `LOW`) |
+| `cvss_score` | Highest V3 score across all CVSS sources, else V2, else a default for the severity |
+| `description` | `Title`, plus `no fix available` when there is no `FixedVersion` and `dev dependency only` for packages Trivy marks as development dependencies (which the policy then suppresses) |
+| `discovered_date` | `PublishedDate`. This is conservative: the SLA clock starts when the CVE became public, not when your scanner first saw it |
+| `exploit_available`, `public_exploit`, `active_exploitation` | `true` when the CVE is in the CISA Known Exploited Vulnerabilities catalogue |
+
+The same CVE reported by two targets in one image (for example the OS layer and a lock file) is counted once.
+
 ## Running locally
 
 **Prerequisites:**
@@ -250,10 +294,11 @@ Without these secrets the gate still runs and blocks correctly. Violations are w
 - Docker (optional, for container scanning)
 - Checkov and TFLint (optional, for IaC scanning)
 
-**Policy unit tests:**
+**Policy unit tests and script tests:**
 
 ```bash
 opa test policies/ -v
+python -m pytest tests/ -v
 ```
 
 The tests cover the block rules for every severity, false positive and excluded package handling, the noise statistics (including an empty scan) and the SLA windows.
@@ -319,7 +364,8 @@ trivy image devsecops-gateway:local
 
 ## Extending this project
 
-- Swap the fixtures for real Trivy, Snyk or SonarQube JSON output, normalised to the schema in `fixtures/scan-blocked.json`.
+- Add converters for Snyk and SonarQube next to `normalize-trivy.py`, writing the same schema as `fixtures/scan-blocked.json`.
+- Track `first_seen` per finding between runs, so SLA clocks start when the finding first appeared in your environment rather than at CVE publication.
 - Add a Jenkins `Jenkinsfile` alongside the GitHub Actions workflow for hybrid pipeline environments.
 - Add ArgoCD `Application` manifests under a `gitops/` directory to complete the deploy job.
 - Tune `excluded_packages`, `false_positive_patterns`, and per-severity SLA windows in `policies/` to match organizational risk tolerance.
