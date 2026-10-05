@@ -1,17 +1,28 @@
 # Reference container used to exercise the Trivy scan in CI.
-FROM node:22-alpine
 
+# Stage 1: install production dependencies with npm.
+FROM node:22-alpine AS deps
+WORKDIR /app
+COPY package*.json ./
+RUN npm install --omit=dev --no-audit --no-fund
+
+# Stage 2: runtime image. npm, npx, corepack and yarn are removed because the
+# server only needs the node binary, and they ship their own dependencies
+# that would otherwise show up in the image scan.
+FROM node:22-alpine
 ENV NODE_ENV=production
 WORKDIR /app
 
-COPY package*.json ./
-RUN npm install --omit=dev --no-audit --no-fund && npm cache clean --force
+RUN rm -rf /usr/local/lib/node_modules /opt/yarn-* \
+      /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
+      /usr/local/bin/yarn /usr/local/bin/yarnpkg && \
+    addgroup -g 1001 -S nodejs && \
+    adduser -S nodejs -u 1001 -G nodejs
 
-COPY server.js ./
+COPY --from=deps /app/node_modules ./node_modules
+COPY package.json server.js ./
 
 # Run as a dedicated unprivileged user.
-RUN addgroup -g 1001 -S nodejs && \
-    adduser -S nodejs -u 1001 -G nodejs
 USER nodejs
 
 EXPOSE 3000
