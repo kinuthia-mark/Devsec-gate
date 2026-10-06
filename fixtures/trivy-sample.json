@@ -1,0 +1,70 @@
+{
+  "SchemaVersion": 2,
+  "ArtifactName": "devsecops-gateway:demo",
+  "ArtifactType": "container_image",
+  "Results": [
+    {
+      "Target": "devsecops-gateway:demo (alpine 3.19.1)",
+      "Class": "os-pkgs",
+      "Type": "alpine",
+      "Vulnerabilities": [
+        {
+          "VulnerabilityID": "CVE-2024-6119",
+          "PkgName": "libssl3",
+          "InstalledVersion": "3.1.4-r5",
+          "FixedVersion": "3.1.7-r0",
+          "Severity": "HIGH",
+          "Title": "openssl: Possible denial of service in X.509 name checks",
+          "PublishedDate": "2024-09-03T16:15:06.947Z",
+          "CVSS": {"nvd": {"V3Score": 7.5}, "redhat": {"V3Score": 5.9}}
+        },
+        {
+          "VulnerabilityID": "CVE-2023-42366",
+          "PkgName": "busybox",
+          "InstalledVersion": "1.36.1-r15",
+          "Severity": "MEDIUM",
+          "Title": "busybox: a heap-buffer-overflow in awk",
+          "PublishedDate": "2023-11-27T23:15:07.420Z",
+          "CVSS": {"nvd": {"V3Score": 5.5}}
+        }
+      ]
+    },
+    {
+      "Target": "app/package-lock.json",
+      "Class": "lang-pkgs",
+      "Type": "npm",
+      "Vulnerabilities": [
+        {
+          "VulnerabilityID": "CVE-2021-44228",
+          "PkgName": "log4js-bridge",
+          "InstalledVersion": "1.0.0",
+          "FixedVersion": "1.0.1",
+          "Severity": "CRITICAL",
+          "Title": "Remote code execution through JNDI lookups",
+          "PublishedDate": "2021-12-10T10:15:09.143Z",
+          "CVSS": {"nvd": {"V3Score": 10.0, "V2Score": 9.3}}
+        },
+        {
+          "VulnerabilityID": "CVE-2022-25883",
+          "PkgName": "semver",
+          "InstalledVersion": "5.7.1",
+          "FixedVersion": "5.7.2",
+          "Severity": "HIGH",
+          "Title": "semver: Regular expression denial of service",
+          "PublishedDate": "2023-06-21T05:15:09.520Z",
+          "PkgIdentifier": {"Dev": true},
+          "CVSS": {"nvd": {"V3Score": 7.5}}
+        },
+        {
+          "VulnerabilityID": "CVE-2021-44228",
+          "PkgName": "log4js-bridge",
+          "InstalledVersion": "1.0.0",
+          "FixedVersion": "1.0.1",
+          "Severity": "CRITICAL",
+          "Title": "Duplicate of the finding above, reported by a second target",
+          "PublishedDate": "2021-12-10T10:15:09.143Z"
+        }
+      ]
+    }
+  ]
+}

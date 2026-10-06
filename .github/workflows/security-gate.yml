@@ -6,29 +6,163 @@ on:
   pull_request:
     branches: [main, develop]
 
+permissions:
+  contents: read
+
 jobs:
-  security-gate:
+  policy-tests:
+    name: OPA policy unit tests
     runs-on: ubuntu-latest
-    
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-      
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
-      
+      - uses: actions/checkout@v4
+
       - name: Set up OPA
-        uses: open-policy-agent/setup-opa@v1
+        uses: open-policy-agent/setup-opa@v2
         with:
           version: latest
-      
-      - name: Run Security Gate
-        run: python3 scripts/process-results.py policies/test_data.json
-        continue-on-error: true
-      
-      - name: Upload Security Report
+
+      - name: Check Rego syntax and formatting
+        run: |
+          opa check policies/
+          opa fmt --fail --list policies/
+
+      - name: Run policy tests
+        run: opa test policies/ -v
+
+  iac-scan:
+    name: Terraform lint and Checkov
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v4
+
+      - name: terraform fmt and validate
+        working-directory: terraform
+        run: |
+          terraform fmt -check -recursive
+          terraform init -backend=false -input=false
+          terraform validate
+
+      - uses: terraform-linters/setup-tflint@v6
+
+      - name: TFLint
+        run: |
+          tflint --init --config="$GITHUB_WORKSPACE/.tflint.hcl"
+          tflint --chdir=terraform --config="$GITHUB_WORKSPACE/.tflint.hcl"
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Checkov
+        run: |
+          pip install checkov
+          checkov --config-file .checkov.yaml
+
+  python-tests:
+    name: Python script tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Set up OPA
+        uses: open-policy-agent/setup-opa@v2
+        with:
+          version: latest
+      - run: pip install pytest
+      - run: python -m pytest tests/ -v
+
+  container-scan:
+    name: Scan the container and gate on real findings
+    runs-on: ubuntu-latest
+    needs: policy-tests
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up OPA
+        uses: open-policy-agent/setup-opa@v2
+        with:
+          version: latest
+
+      - name: Build image
+        run: docker build -t devsecops-gateway:${{ github.sha }} ./app
+
+      - name: Trivy scan to JSON (all severities)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: devsecops-gateway:${{ github.sha }}
+          format: json
+          output: trivy.json
+          exit-code: "0"
+
+      # CISA's catalogue of CVEs that are being exploited in the wild. A
+      # finding on this list counts as actively exploited in the policy.
+      - name: Download the CISA KEV catalogue
+        run: |
+          curl -fsSL --retry 3 -o kev.json             https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json             || echo '{"vulnerabilities": []}' > kev.json
+
+      - name: Normalise Trivy output for the gate
+        run: python3 scripts/normalize-trivy.py trivy.json --kev kev.json -o scan-results/gate-input.json
+
+      - name: Exploitability gate on the real scan
+        run: python3 scripts/process-results.py scan-results/gate-input.json
+
+      - name: Upload scan and gate results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: container-scan
+          path: |
+            trivy.json
+            scan-results/
+          retention-days: 30
+
+  security-gate:
+    name: Exploitability gate
+    runs-on: ubuntu-latest
+    needs: policy-tests
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up OPA
+        uses: open-policy-agent/setup-opa@v2
+        with:
+          version: latest
+
+      # The clean fixture must pass. This is the gate decision a real
+      # pipeline would act on, with the scanner output swapped in.
+      - name: Gate passes on the clean scan
+        run: python3 scripts/process-results.py fixtures/scan-clean.json
+
+      # The blocked fixture holds an unmitigated, actively exploited CRITICAL.
+      # The job fails if the gate ever lets it through.
+      - name: Gate blocks the scan with an exploitable CRITICAL
+        env:
+          JIRA_URL: ${{ secrets.JIRA_URL }}
+          JIRA_USER: ${{ secrets.JIRA_USER }}
+          JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
+          JIRA_PROJECT_KEY: ${{ secrets.JIRA_PROJECT_KEY }}
+        run: |
+          if python3 scripts/process-results.py fixtures/scan-blocked.json; then
+            echo "::error::The gate let an exploitable CRITICAL through"
+            exit 1
+          fi
+          echo "Gate blocked the build as expected."
+
+      - name: Upload security report
         if: always()
         uses: actions/upload-artifact@v4
         with:

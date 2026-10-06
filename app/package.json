@@ -8,9 +8,9 @@
     "test": "echo 'No tests specified'"
   },
   "keywords": ["devsecops", "security", "cicd"],
-  "author": "DevSecOps Team",
+  "author": "Mark Kinuthia",
   "license": "MIT",
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=22.0.0"
   }
 }

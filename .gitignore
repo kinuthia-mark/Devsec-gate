@@ -29,3 +29,8 @@ secrets.yaml
 *.pem
 opa
 opa.exe
+
+# Local scanner downloads
+trivy.json
+kev.json
+.pytest_cache/
