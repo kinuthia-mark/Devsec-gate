@@ -9,7 +9,7 @@
 
 A centralized security gating framework that filters vulnerability noise by **exploitability** rather than raw alert volume, enforces severity-weighted SLA windows, and blocks unverified builds before they reach production Kubernetes — without burying developers in false positives.
 
-Designed against a target environment of 120+ repositories and 18 CI/CD pipelines.
+The policies, scripts and workflow have no project-specific paths, so the same gate can be copied into any repository's pipeline.
 
 ---
 
@@ -78,7 +78,7 @@ flowchart LR
     style B fill:#f5f5f5,color:#000,stroke:#333
 ```
 
-**Impact (target metrics for this framework):** ~42% reduction in false-positive pipeline noise; mean time to remediate down from 21 days to 9 days.
+**Measured on the included data:** on `fixtures/scan-blocked.json` the gate suppresses 2 of 3 findings as dev-only or build-only noise (67%) and blocks only on the actively exploited CRITICAL. On `fixtures/trivy-sample.json` it suppresses the dev-only HIGH and blocks on the CVE listed in CISA KEV. Both results are asserted by the test suite, so the numbers stay true as the policy changes.
 
 ## Repository layout
 
