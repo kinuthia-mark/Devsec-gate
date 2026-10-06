@@ -98,6 +98,10 @@ def test_gate_blocks_the_blocked_fixture(tmp_path):
     result = run_gate(FIXTURES / "scan-blocked.json", tmp_path)
     assert result.returncode == 1
     assert "Gate decision: BLOCK" in result.stdout
+    summary = json.loads((ROOT / "scan-results" / "triage-summary.json").read_text())
+    assert summary["noise_statistics"]["false_positives_filtered"] == 2
+    assert summary["noise_statistics"]["noise_reduction_percentage"] == 67
+    assert summary["violated_policies"] == ["CRITICAL vulnerability detected - must be remediated"]
 
 
 @needs_opa
